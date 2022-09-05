@@ -61,7 +61,7 @@ public static class SqlConnectionExtensions
         return parameter;
     }
 
-    static IEnumerable<SqlParameter> ObjectToParameters(object obj)
+    static IEnumerable<SqlParameter> ObjectToParameters(object? obj)
     {
         if (obj is IEnumerable<KeyValuePair<string, object>> dic)
         {
@@ -73,7 +73,14 @@ public static class SqlConnectionExtensions
                 yield return CreateSqlParameter(name, value);
             }
         }
-        else
+        else if (obj is IEnumerable<SqlParameter> alreayConverted)
+        {
+            foreach (var p in alreayConverted)
+            {
+                yield return p;
+            }
+        }
+        else if (obj != null)
         {
             var props = TypeDescriptor.GetProperties(obj);
 
@@ -89,6 +96,8 @@ public static class SqlConnectionExtensions
 
     #endregion
 
+    #region Base
+
     public static async Task EnsureConnectionNotClosedAsync(this SqlConnection db)
     {
         if (db.State == ConnectionState.Closed)
@@ -97,20 +106,16 @@ public static class SqlConnectionExtensions
         }
     }
 
-    static SqlCommand CreateCommand(SqlConnection db, string query, object? parameters)
+    static SqlCommand CreateCommand(SqlConnection db, SqlQuery sqlQuery)
     {
-        var command = new SqlCommand(query, db)
+        var command = new SqlCommand(sqlQuery.QueryString, db)
         {
             CommandTimeout = CommandTimeout
         };
 
-
-        if (parameters != null)
+        if (sqlQuery.Parameters != null && sqlQuery.Parameters.Any())
         {
-            foreach (var parameter in ObjectToParameters(parameters))
-            {
-                command.Parameters.Add(parameter);
-            }
+            command.Parameters.AddRange(sqlQuery.Parameters.ToArray());
         }
 
         if (transactions.TryGetValue(db, out var tx))
@@ -167,9 +172,31 @@ public static class SqlConnectionExtensions
         return entity;
     }
 
-    public static async Task<TEntity?> GetEntityAsync<TEntity>(this SqlConnection db, RawSqlString query, object? parameters = null)
+    #endregion
+
+    #region Exécution des requêtes
+
+    static SqlQuery RawSqlStringToSqlQuery(RawSqlString query, object? parameters)
     {
-        using var reader = await GetDataReaderAsync(db, query.Value, parameters);
+        return new SqlQuery
+        {
+            QueryString = query.Value,
+            Parameters = ObjectToParameters(parameters).ToList()
+        };
+    }
+
+    static async Task<SqlDataReader> GetDataReaderAsync(this SqlConnection db, SqlQuery sqlQuery)
+    {
+        await EnsureConnectionNotClosedAsync(db);
+
+        using var command = CreateCommand(db, sqlQuery);
+
+        return await command.ExecuteReaderAsync();
+    }
+
+    static async Task<TEntity?> GetEntityAsync<TEntity>(this SqlConnection db, SqlQuery sqlQuery)
+    {
+        using var reader = await GetDataReaderAsync(db, sqlQuery);
 
         if (await reader.ReadAsync())
         {
@@ -179,11 +206,11 @@ public static class SqlConnectionExtensions
         return default;
     }
 
-    public static async Task<List<TEntity>> GetEntityListAsync<TEntity>(this SqlConnection db, RawSqlString query, object? parameters = null)
+    static async Task<List<TEntity>> GetEntityListAsync<TEntity>(this SqlConnection db, SqlQuery sqlQuery)
     {
         var result = new List<TEntity>();
 
-        using var reader = await GetDataReaderAsync(db, query.Value, parameters);
+        using var reader = await GetDataReaderAsync(db, sqlQuery);
 
         while (await reader.ReadAsync())
         {
@@ -193,11 +220,11 @@ public static class SqlConnectionExtensions
         return result;
     }
 
-    public static async Task<List<object?[]>> GetRawDataListAsync(this SqlConnection db, RawSqlString query, object? parameters = null)
+    static async Task<List<object?[]>> GetRawDataListAsync(this SqlConnection db, SqlQuery sqlQuery)
     {
         var result = new List<object?[]>();
 
-        using var reader = await GetDataReaderAsync(db, query, parameters);
+        using var reader = await GetDataReaderAsync(db, sqlQuery);
 
         while (await reader.ReadAsync())
         {
@@ -218,12 +245,12 @@ public static class SqlConnectionExtensions
         return result;
     }
 
-    public static async Task<(List<string>, List<object?[]>)> GetRawDataListWithColumnNamesAsync(this SqlConnection db, RawSqlString query, object? parameters = null)
+    static async Task<(List<string>, List<object?[]>)> GetRawDataListWithColumnNamesAsync(this SqlConnection db, SqlQuery sqlQuery)
     {
         var result = new List<object?[]>();
         var columns = new List<string>();
 
-        using var reader = await GetDataReaderAsync(db, query.Value, parameters);
+        using var reader = await GetDataReaderAsync(db, sqlQuery);
 
         while (await reader.ReadAsync())
         {
@@ -260,7 +287,7 @@ public static class SqlConnectionExtensions
         return (columns, result);
     }
 
-    public static async Task<TValue> GetValueAsync<TValue>(this SqlConnection db, RawSqlString query, object? parameters = null)
+    static async Task<TValue> GetValueAsync<TValue>(this SqlConnection db, SqlQuery sqlQuery)
         where TValue : struct
     {
         // Il faut prendre en compte la possibilité d'avoir un lot de requêtes.
@@ -268,7 +295,7 @@ public static class SqlConnectionExtensions
 
         object? obj = null;
 
-        using var reader = await GetDataReaderAsync(db, query.Value, parameters);
+        using var reader = await GetDataReaderAsync(db, sqlQuery);
         do
         {
             while (await reader.ReadAsync())
@@ -282,11 +309,11 @@ public static class SqlConnectionExtensions
 
     }
 
-    public static async Task<List<TValue>> GetListAsync<TValue>(this SqlConnection db, RawSqlString query, object? parameters = null)
+    static async Task<List<TValue>> GetListAsync<TValue>(this SqlConnection db, SqlQuery sqlQuery)
     {
         var result = new List<TValue>();
 
-        using var reader = await GetDataReaderAsync(db, query.Value, parameters);
+        using var reader = await GetDataReaderAsync(db, sqlQuery);
 
         while (await reader.ReadAsync())
         {
@@ -296,13 +323,13 @@ public static class SqlConnectionExtensions
         return result;
     }
 
-    public static async Task<Dictionary<TKey, TValue>> GetDictionaryAsync<TKey, TValue>(this SqlConnection db, RawSqlString query, object? parameters = null)
+    static async Task<Dictionary<TKey, TValue>> GetDictionaryAsync<TKey, TValue>(this SqlConnection db, SqlQuery sqlQuery)
         where TKey : notnull
         where TValue : struct
     {
         var result = new Dictionary<TKey, TValue>();
 
-        using var reader = await GetDataReaderAsync(db, query.Value, parameters);
+        using var reader = await GetDataReaderAsync(db, sqlQuery);
 
         while (await reader.ReadAsync())
         {
@@ -321,11 +348,11 @@ public static class SqlConnectionExtensions
         return result;
     }
 
-    public static async Task<Dictionary<string, object?>> GetObjectAsDictionaryAsync(this SqlConnection db, RawSqlString query, object? parameters = null)
+    static async Task<Dictionary<string, object?>> GetObjectAsDictionaryAsync(this SqlConnection db, SqlQuery sqlQuery)
     {
         var result = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
 
-        using var reader = await GetDataReaderAsync(db, query.Value, parameters);
+        using var reader = await GetDataReaderAsync(db, sqlQuery);
 
         if (await reader.ReadAsync())
         {
@@ -343,18 +370,24 @@ public static class SqlConnectionExtensions
         return result;
     }
 
-    public static async Task<int> ExecuteAsync(this SqlConnection db, RawSqlString query, object? parameters = null)
+    static async Task<int> ExecuteAsync(this SqlConnection db, SqlQuery sqlQuery)
     {
         await EnsureConnectionNotClosedAsync(db);
 
-        using var command = CreateCommand(db, query.Value, parameters);
+        using var command = CreateCommand(db, sqlQuery);
 
         return await command.ExecuteNonQueryAsync();
     }
 
-    public static async Task<TIdentity> ExecuteAndSelectIdentityAsync<TIdentity>(this SqlConnection db, RawSqlString query, object? parameters = null)
+    static async Task<TIdentity> ExecuteAndSelectIdentityAsync<TIdentity>(this SqlConnection db, SqlQuery sqlQuery)
     {
-        var value = await GetValueAsync<decimal>(db, query.Value + "; select @@identity;", parameters);
+        var newQuery = new SqlQuery
+        {
+            QueryString = sqlQuery.QueryString + "; select @@identity;",
+            Parameters = sqlQuery.Parameters
+        };
+
+        var value = await GetValueAsync<decimal>(db, newQuery);
 
         if (typeof(TIdentity) == typeof(int))
         {
@@ -370,27 +403,56 @@ public static class SqlConnectionExtensions
         }
     }
 
+    #endregion
+
+    #region RawSqlString
+
+    public static async Task<TEntity?> GetEntityAsync<TEntity>(this SqlConnection db, RawSqlString query, object? parameters = null)
+        => await GetEntityAsync<TEntity>(db, RawSqlStringToSqlQuery(query, parameters));
+
+    public static async Task<List<TEntity>> GetEntityListAsync<TEntity>(this SqlConnection db, RawSqlString query, object? parameters = null)
+        => await GetEntityListAsync<TEntity>(db, RawSqlStringToSqlQuery(query, parameters));
+
+    public static async Task<List<object?[]>> GetRawDataListAsync(this SqlConnection db, RawSqlString query, object? parameters = null)
+        => await GetRawDataListAsync(db, RawSqlStringToSqlQuery(query, parameters));
+
+    public static async Task<(List<string>, List<object?[]>)> GetRawDataListWithColumnNamesAsync(this SqlConnection db, RawSqlString query, object? parameters = null)
+        => await GetRawDataListWithColumnNamesAsync(db, RawSqlStringToSqlQuery(query, parameters));
+
+    public static async Task<TValue> GetValueAsync<TValue>(this SqlConnection db, RawSqlString query, object? parameters = null)
+        where TValue : struct
+        => await GetValueAsync<TValue>(db, RawSqlStringToSqlQuery(query, parameters));
+
+    public static async Task<List<TValue>> GetListAsync<TValue>(this SqlConnection db, RawSqlString query, object? parameters = null)
+        => await GetListAsync<TValue>(db, RawSqlStringToSqlQuery(query, parameters));
+
+    public static async Task<Dictionary<TKey, TValue>> GetDictionaryAsync<TKey, TValue>(this SqlConnection db, RawSqlString query, object? parameters = null)
+        where TKey : notnull
+        where TValue : struct
+        => await GetDictionaryAsync<TKey, TValue>(db, RawSqlStringToSqlQuery(query, parameters));
+
+    public static async Task<Dictionary<string, object?>> GetObjectAsDictionaryAsync(this SqlConnection db, RawSqlString query, object? parameters = null)
+        => await GetObjectAsDictionaryAsync(db, RawSqlStringToSqlQuery(query, parameters));
+
+    public static async Task<int> ExecuteAsync(this SqlConnection db, RawSqlString query, object? parameters = null)
+        => await ExecuteAsync(db, RawSqlStringToSqlQuery(query, parameters));
+
+    public static async Task<TIdentity> ExecuteAndSelectIdentityAsync<TIdentity>(this SqlConnection db, RawSqlString query, object? parameters = null)
+        => await ExecuteAndSelectIdentityAsync<TIdentity>(db, RawSqlStringToSqlQuery(query, parameters));
+
     public static async Task<SqlDataReader> GetDataReaderAsync(this SqlConnection db, RawSqlString query, object? parameters = null)
-    {
-        await EnsureConnectionNotClosedAsync(db);
+        => await GetDataReaderAsync(db, RawSqlStringToSqlQuery(query, parameters));
 
-        using var command = CreateCommand(db, query.Value, parameters);
-
-        return await command.ExecuteReaderAsync();
-    }
+    #endregion
 
     #region FormattableString
 
-    static SqlCommand CreateCommand(SqlConnection db, FormattableString query)
+    static SqlQuery FormattableStringToSqlQuery(FormattableString query)
     {
-        var command = new SqlCommand()
-        {
-            Connection = db,
-            CommandTimeout = CommandTimeout
-        };
-
         var sql = query.Format;
         var args = query.GetArguments();
+
+        var parameters = new List<SqlParameter>();
 
         for (int i = 0; i < args.Length; i++)
         {
@@ -431,7 +493,7 @@ public static class SqlConnectionExtensions
                         {
                             var pname = GetParamName($"p{i}_{j++}");
 
-                            command.Parameters.Add(CreateSqlParameter(pname, v));
+                            parameters.Add(CreateSqlParameter(pname, v));
                         }
 
                         values = string.Join(",", pnames);
@@ -444,212 +506,55 @@ public static class SqlConnectionExtensions
             {
                 var pname = GetParamName($"p{i}");
                 sql = sql.Replace("{" + i + "}", pname);
-                command.Parameters.Add(CreateSqlParameter(pname, value));
+                parameters.Add(CreateSqlParameter(pname, value));
             }
 
         }
 
-        command.CommandText = sql;
 
-        return command;
+
+        return new SqlQuery
+        {
+            QueryString = sql,
+            Parameters = parameters
+        };
 
         static string GetParamName(string undecoratedParamName) => $"@{undecoratedParamName}";
         
     }
 
     public static async Task<SqlDataReader> GetDataReaderAsync(this SqlConnection db, FormattableString query)
-    {
-        await EnsureConnectionNotClosedAsync(db);
-
-        using var command = CreateCommand(db, query);
-
-        return await command.ExecuteReaderAsync();
-    }
+        => await GetDataReaderAsync(db, FormattableStringToSqlQuery(query));
 
     public static async Task<TEntity?> GetEntityAsync<TEntity>(this SqlConnection db, FormattableString query)
-    {
-        using var reader = await GetDataReaderAsync(db, query);
-
-        if (await reader.ReadAsync())
-        {
-            return reader.ToEntity<TEntity>();
-        }
-
-        return default;
-    }
+        => await GetEntityAsync<TEntity>(db, FormattableStringToSqlQuery(query));
 
     public static async Task<List<TEntity>> GetEntityListAsync<TEntity>(this SqlConnection db, FormattableString query)
-    {
-        var result = new List<TEntity>();
-
-        using var reader = await GetDataReaderAsync(db, query);
-
-        while (await reader.ReadAsync())
-        {
-            result.Add(reader.ToEntity<TEntity>());
-        }
-
-        return result;
-    }
+        => await GetEntityListAsync<TEntity>(db, FormattableStringToSqlQuery(query));
 
     public static async Task<List<object?[]>> GetRawDataListAsync(this SqlConnection db, FormattableString query)
-    {
-        var result = new List<object?[]>();
-
-        using var reader = await GetDataReaderAsync(db, query);
-
-        while (await reader.ReadAsync())
-        {
-            var values = new object?[reader.FieldCount];
-            reader.GetValues(values);
-
-            for (var i = 0; i < values.Length; i++)
-            {
-                if (values[i] is DBNull)
-                {
-                    values[i] = null;
-                }
-            }
-
-            result.Add(values);
-        }
-
-        return result;
-    }
+        => await GetRawDataListAsync(db, FormattableStringToSqlQuery(query));
 
     public static async Task<(List<string>, List<object?[]>)> GetRawDataListWithColumnNamesAsync(this SqlConnection db, FormattableString query)
-    {
-        var result = new List<object?[]>();
-        var columns = new List<string>();
-
-        using var reader = await GetDataReaderAsync(db, query);
-
-        while (await reader.ReadAsync())
-        {
-            if (!columns.Any())
-            {
-                for (var i = 0; i < reader.FieldCount; i++)
-                {
-                    columns.Add(reader.GetName(i));
-                }
-            }
-
-            var row = new object?[reader.FieldCount];
-
-            for (var i = 0; i < reader.FieldCount; i++)
-            {
-                try
-                {
-                    var value = reader.GetValue(i);
-                    if (value is DBNull)
-                    {
-                        value = null;
-                    }
-                    row[i] = value;
-                }
-                catch
-                {
-                    row[i] = null;
-                }
-            }
-
-            result.Add(row);
-        }
-
-        return (columns, result);
-    }
+        => await GetRawDataListWithColumnNamesAsync(db, FormattableStringToSqlQuery(query));
 
     public static async Task<TValue> GetValueAsync<TValue>(this SqlConnection db, FormattableString query)
         where TValue : struct
-    {
-        // Il faut prendre en compte la possibilité d'avoir un lot de requêtes.
-        // Si tel est le cas, il faut lire toutes les réponses donc passer par un reader.
-
-        object? obj = null;
-
-        using var reader = await GetDataReaderAsync(db, query);
-        do
-        {
-            while (await reader.ReadAsync())
-            {
-                obj = reader[0];
-            }
-
-        } while (await reader.NextResultAsync());
-
-        return obj is TValue value ? value : default;
-
-    }
+        => await GetValueAsync<TValue>(db, FormattableStringToSqlQuery(query));
 
     public static async Task<List<TValue>> GetListAsync<TValue>(this SqlConnection db, FormattableString query)
-    {
-        var result = new List<TValue>();
-
-        using var reader = await GetDataReaderAsync(db, query);
-
-        while (await reader.ReadAsync())
-        {
-            result.Add((TValue)reader[0]);
-        }
-
-        return result;
-    }
+        => await GetListAsync<TValue>(db, FormattableStringToSqlQuery(query));
 
     public static async Task<Dictionary<TKey, TValue>> GetDictionaryAsync<TKey, TValue>(this SqlConnection db, FormattableString query)
         where TKey : notnull
         where TValue : struct
-    {
-        var result = new Dictionary<TKey, TValue>();
-
-        using var reader = await GetDataReaderAsync(db, query);
-
-        while (await reader.ReadAsync())
-        {
-            var okey = reader[0];
-            var ovalue = reader[1];
-
-            var key = okey is DBNull ? default : (TKey)okey;
-
-            if (key != null)
-            {
-                var value = ovalue is DBNull ? default : (TValue)ovalue;
-                result[key] = value;
-            }
-        }
-
-        return result;
-    }
+        => await GetDictionaryAsync<TKey, TValue>(db, FormattableStringToSqlQuery(query));
 
     public static async Task<Dictionary<string, object?>> GetObjectAsDictionaryAsync(this SqlConnection db, FormattableString query)
-    {
-        var result = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
-
-        using var reader = await GetDataReaderAsync(db, query);
-
-        if (await reader.ReadAsync())
-        {
-            for (var i = 0; i < reader.FieldCount; i++)
-            {
-                var ovalue = reader[i];
-
-                var key = reader.GetName(i);
-                var value = ovalue is DBNull ? default : ovalue;
-
-                result[key] = value;
-            }
-        }
-
-        return result;
-    }
+        => await GetObjectAsDictionaryAsync(db, FormattableStringToSqlQuery(query));
 
     public static async Task<int> ExecuteAsync(this SqlConnection db, FormattableString query)
-    {
-        await EnsureConnectionNotClosedAsync(db);
-
-        using var command = CreateCommand(db, query);
-
-        return await command.ExecuteNonQueryAsync();
-    }
+        => await ExecuteAsync(db, FormattableStringToSqlQuery(query));
 
     #endregion
 }
