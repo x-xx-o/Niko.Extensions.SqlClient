@@ -4,6 +4,7 @@ using System.Data;
 using System.Globalization;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Text.Json;
 
 namespace Microsoft.Data.SqlClient;
 
@@ -126,6 +127,10 @@ public static class SqlConnectionExtensions
         return command;
     }
 
+    #endregion
+
+    #region Matérialisation
+
     static void PopulateEntity(SqlDataReader reader, object entity)
     {
         var props = entity.GetType().GetProperties(
@@ -145,9 +150,21 @@ public static class SqlConnectionExtensions
                 var value = values[i];
                 if (value is not DBNull)
                 {
-                    if (prop.PropertyType.IsEnum && value is string vs && Enum.TryParse(prop.PropertyType, vs, true, out var enumValue))
+                    // Enum string
+                    if (prop.PropertyType.IsEnum 
+                        && value is string vs 
+                        && Enum.TryParse(prop.PropertyType, vs, true, out var enumValue))
                     {
                         prop.SetValue(entity, enumValue);
+                    }
+                    // Objet ou tableau JSON
+                    else if (prop.PropertyType.IsClass 
+                        && prop.PropertyType != typeof(string)
+                        && value is string s 
+                        && (s.StartsWith('{') || s.StartsWith('[')))
+                    {
+                        var deserialized = JsonSerializer.Deserialize(s, prop.PropertyType);
+                        prop.SetValue(entity, deserialized);
                     }
                     else
                     {
